@@ -1,0 +1,1 @@
+export const BACKEND_URL= "https://backend.akdon9936.workers.dev"

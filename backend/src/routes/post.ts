@@ -1,124 +1,116 @@
 import { Hono } from "hono";
-import { renderToString } from 'hono/jsx/dom/server';
-import { PrismaClient } from '@prisma/client/edge'
-import { withAccelerate } from '@prisma/extension-accelerate'
-import { decode, sign, verify } from 'hono/jwt'
-import { createBlogInput,updateBlogInput } from "@achaud/medium-blog";
+import { PrismaClient } from '@prisma/client/edge';
+import { withAccelerate } from '@prisma/extension-accelerate';
+import { verify } from 'hono/jwt';
+import { createBlogInput, updateBlogInput } from "@achaud/medium-blog";
 
+// Move PrismaClient initialization outside the route handlers
+const prisma = new PrismaClient().$extends(withAccelerate());
 
 export const postRouter = new Hono<{
-    Bindings :{
-        DATABASE_URL :string,
-        JWT_SECRET :string
-    },
-    Variables:{
-      userId :string
-    }
-}>()
+  Bindings: {
+    DATABASE_URL: string;
+    JWT_SECRET: string;
+  };
+  Variables: {
+    userId: string;
+  };
+}>();
 
-postRouter.use("/*" ,async (c,next)=>{
+// Middleware for JWT authentication
+postRouter.use("/*", async (c, next) => {
   const token = c.req.header("authorization");
-  
-  if(!token){
-    return c.json({error:"unauthorized"});
+
+  if (!token) {
+    return c.json({ error: "unauthorized" }, 401); // Add 401 status code
   }
-  const decodedJwt= await verify(token,c.env.JWT_SECRET) 
-  if(!decodedJwt){
-    return c.json({
-      error :"unauthorized"
-    })
-  }
-  //@ts-ignore
+
+  try {
+    const decodedJwt = await verify(token, c.env.JWT_SECRET);
+    //@ts-ignore
     c.set("userId", decodedJwt.id);
-      await next()
-}) 
-postRouter.post("/" ,async(c)=>{
-    const prisma = new PrismaClient({
-        datasourceUrl: c.env.DATABASE_URL,
-      }).$extends(withAccelerate())
-      const authorId = c.get("userId");
-      const body = await c.req.json();
-      const {success}= createBlogInput.safeParse(body);
-      if(!success){
-        c.status(411);
-        return c.json({
-          message:"Input validation not correct"
-        })
-      }
-      const post =  await prisma.post.create({
-        data:{
-          title:body.title,
-          content: body.content,
-          autherId:authorId
-        }
-       })
-      
-      return c.json({
-      id :post.id
-    })
-  })
-  
-postRouter.put("/",async(c)=>{
-      const prisma = new PrismaClient({
-      datasourceUrl: c.env.DATABASE_URL,
-       }).$extends(withAccelerate())
+    await next();
+  } catch (error) {
+    return c.json({ error: "unauthorized" }, 401); // Ensure response is returned
+  }
+});
 
-       const body = await c.req.json();
-       const {success}= updateBlogInput.safeParse(body);
-       if(!success){
-         c.status(411);
-         return c.json({
-           message:"Input validation not correct"
-         })
-       }
-       const post =  await prisma.post.update({
-        where:{
-       id:body.id
-        },
-       data:{
-        title:body.title,
-      content: body.content,
-        }
-     })
-    return c.json({
-    id :post.id
-    })
-    
-  })
-postRouter.get("/:id",async(c)=>{
-    const id = c.req.param("id")
-  const prisma = new PrismaClient({
-    datasourceUrl: c.env.DATABASE_URL,
-  }).$extends(withAccelerate())
+// POST route for creating a blog post
+postRouter.post("/", async (c) => {
   const body = await c.req.json();
+  const { success, error } = createBlogInput.safeParse(body);
 
- try{
-   const post =  await prisma.post.findFirst({
-    where:{
-      id :id
+  if (!success) {
+    return c.json({ message: "Input validation not correct", error }, 400); // Add validation errors and 400 status code
+  }
+
+  const authorId = c.get("userId");
+
+  try {
+    const post = await prisma.post.create({
+       //@ts-ignore
+      data: {
+        title: body.title,
+        content: body.content,
+        autherId: authorId,
+      },
+    });
+
+    return c.json({ id: post.id }, 201); // Return 201 status code for successful creation
+  } catch (e) {
+    return c.json({ message: "Error while creating post" }, 500); // Handle errors with a 500 status code
+  }
+});
+
+// PUT route for updating a blog post
+postRouter.put("/", async (c) => {
+  const body = await c.req.json();
+  const { success, error } = updateBlogInput.safeParse(body);
+
+  if (!success) {
+    return c.json({ message: "Input validation not correct", error }, 400); // Add validation errors
+  }
+
+  try {
+    const post = await prisma.post.update({
+      where: { id: body.id },
+      data: {
+        title: body.title,
+        content: body.content,
+      },
+    });
+
+    return c.json({ id: post.id });
+  } catch (e) {
+    return c.json({ message: "Error while updating post" }, 500); // Handle errors with a 500 status code
+  }
+});
+
+// GET route for fetching a single blog post by id
+postRouter.get("/:id", async (c) => {
+  const id = c.req.param("id");
+
+  try {
+    const post = await prisma.post.findFirst({
+      where: { id },
+    });
+
+    if (!post) {
+      return c.json({ message: "Post not found" }, 404); // Return 404 if the post is not found
     }
-  })
-  
-   return c.json({
-    post
-   })
-  }
-  catch(e){
-    c.status(411);
-    return c.json({
-      message:"error while fetching vlog"
-    })
-  }
-  }) 
 
-  //Todo :add pagenation
-postRouter.get("/bulk",async(c)=>{
-  const prisma = new PrismaClient({
-    datasourceUrl: c.env.DATABASE_URL,
-  }).$extends(withAccelerate())
-   const post = await prisma.post.findMany()
-    return c.json({
-      post
-    })
-  })
-  
+    return c.json({ post });
+  } catch (e) {
+    return c.json({ message: "Error while fetching post" }, 500); // Handle errors with a 500 status code
+  }
+});
+
+// GET route for fetching multiple blog posts (with pagination support)
+postRouter.get("/bulk", async (c) => {
+  try {
+    const posts = await prisma.post.findMany();
+    return c.json({ posts });
+  } catch (e) {
+    return c.json({ message: "Error while fetching posts" }, 500); // Handle errors with a 500 status code
+  }
+});
